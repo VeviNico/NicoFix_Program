@@ -1,0 +1,206 @@
+import subprocess
+import psutil
+import tkinter as tk
+from tkinter import Toplevel, Text, Scrollbar
+import cv2
+import pyaudio
+import datetime
+import threading
+import time
+
+# Flags
+maintenance_running = False
+stop_maintenance = False
+
+# Check Functions
+def check_firewall_status():
+    try:
+        result = subprocess.run('powershell "Get-NetFirewallProfile | Select-Object Enabled"', capture_output=True, text=True, shell=True)
+        return "Active" if "True" in result.stdout else "Disabled"
+    except:
+        return "Check Failed"
+
+def check_antivirus_status():
+    try:
+        result = subprocess.run('powershell "Get-MpComputerStatus | Select-Object AMServiceEnabled"', capture_output=True, text=True, shell=True)
+        if "True" in result.stdout:
+            return "Windows Defender Active"
+        elif "False" in result.stdout:
+            return "Windows Defender Disabled (Check if 3rd-party AV is active)"
+        else:
+            return "Status Unknown"
+    except:
+        return "Check Failed"
+
+def check_webcam():
+    try:
+        c = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if c and c.isOpened(): c.release(); return "Detected"
+        return "Not Detected"
+    except: return "Check Failed"
+
+def check_microphone():
+    try:
+        p = pyaudio.PyAudio()
+        for i in range(p.get_device_count()):
+            if p.get_device_info_by_index(i).get('maxInputChannels', 0) > 0:
+                p.terminate(); return "Detected"
+        p.terminate(); return "Not Detected"
+    except: return "Check Failed"
+
+def check_network_type():
+    try:
+        n = psutil.net_if_addrs()
+        for i in n:
+            if "Wi-Fi" in i or "WLAN" in i: return "Wi-Fi"
+            if "Ethernet" in i: return "Ethernet"
+        return "Unknown"
+    except: return "Check Failed"
+
+def check_windows_update(): return "Check manually in Settings"
+
+def check_uptime():
+    try:
+        up = datetime.datetime.now() - datetime.datetime.fromtimestamp(psutil.boot_time())
+        h, m = divmod(up.total_seconds(), 3600)[0], divmod(up.total_seconds(), 60)[0] % 60
+        return f"{int(h)}h {int(m)}m"
+    except: return "Check Failed"
+
+def check_disk():
+    try:
+        d = psutil.disk_usage('C:\\')
+        return f"{round(d.free/1e9,1)} GB free of {round(d.total/1e9,1)} GB"
+    except: return "Check Failed"
+
+def check_battery():
+    try:
+        b = psutil.sensors_battery()
+        return f"{b.percent}% (Charging)" if b and b.power_plugged else f"{b.percent}% (Not Charging)" if b else "Not Available (likely desktop or external display in use)"
+    except: return "Check Failed"
+
+def check_ram():
+    try:
+        r = psutil.virtual_memory()
+        return f"{round(r.used/1e9,1)} GB used of {round(r.total/1e9,1)} GB"
+    except: return "Check Failed"
+
+# Open Functions
+def open_firewall(): subprocess.Popen('control /name Microsoft.WindowsFirewall', shell=True)
+def open_antivirus(): subprocess.Popen('start windowsdefender:', shell=True)
+def open_webcam(): subprocess.Popen('start ms-settings:privacy-webcam', shell=True)
+def open_microphone(): subprocess.Popen('start ms-settings:privacy-microphone', shell=True)
+def open_network(): subprocess.Popen('control ncpa.cpl', shell=True)
+def open_windows_update(): subprocess.Popen('start ms-settings:windowsupdate', shell=True)
+def open_disk_cleanup(): subprocess.Popen('cleanmgr', shell=True)
+
+# GUI
+app = tk.Tk()
+app.title("NicoFix System & Security Tool")
+app.geometry("850x700")
+app.configure(bg="#1e1e1e")
+
+status_indicators = {}
+
+# Intro Section
+intro_frame = tk.Frame(app, bg="#1e1e1e")
+intro_frame.place(x=20, y=10)
+
+for idx, (color, text) in enumerate([
+    ("green", "Green light = Active, safe, or good condition"),
+    ("red", "Red light = Inactive, not detected, or needs attention")
+]):
+    canvas = tk.Canvas(intro_frame, width=20, height=20, bg="#1e1e1e", highlightthickness=0)
+    canvas.create_oval(2, 2, 18, 18, fill=color)
+    canvas.grid(row=idx, column=0, padx=5, pady=2, sticky="w")
+    tk.Label(intro_frame, text=text, bg="#1e1e1e", fg="white", font=("Arial", 12)).grid(row=idx, column=1, sticky="w", padx=5)
+
+tk.Label(app, text="This tool helps you check your computer’s security and system health.", bg="#1e1e1e", fg="white", font=("Arial", 12)).place(x=20, y=80)
+
+# Main Grid Layout
+x_label, x_light, x_buttons = 50, 320, 420
+y_start, row_height = 130, 45
+
+checks = {
+    "Firewall": (check_firewall_status, open_firewall),
+    "Antivirus": (check_antivirus_status, open_antivirus),
+    "Webcam": (check_webcam, open_webcam),
+    "Microphone": (check_microphone, open_microphone),
+    "Network": (check_network_type, open_network),
+    "Windows Update": (check_windows_update, open_windows_update)
+}
+
+def create_button(text, command, x, y):
+    return tk.Button(app, text=text, command=command, padx=12, pady=6, bg="#4caf50", fg="white", font=("Arial", 12),
+                     activebackground="#66bb6a", activeforeground="white", relief="raised", bd=3).place(x=x, y=y)
+
+def run_checks():
+    for name, (func, _) in checks.items():
+        result = func()
+        canvas, circle = status_indicators[name]
+        color = "green" if any(word in result for word in ["Active", "Detected", "Wi-Fi", "Ethernet", "%"]) else "red"
+        canvas.itemconfig(circle, fill=color)
+
+def start_maintenance():
+    global maintenance_running, stop_maintenance
+    if maintenance_running:
+        return
+    maintenance_running = True
+    stop_maintenance = False
+
+    def run_task():
+        total_time = 30
+        subprocess.Popen('powershell Start-ScheduledTask -TaskName "Manual Maintenance"', shell=True)
+        for remaining in range(total_time, 0, -1):
+            if stop_maintenance:
+                maintenance_status.config(text="Maintenance stopped by user", fg="red")
+                maintenance_running = False
+                return
+            maintenance_status.config(text=f"Maintenance in progress... {remaining} seconds remaining", fg="yellow")
+            time.sleep(1)
+        maintenance_status.config(text="Maintenance complete", fg="green")
+        maintenance_running = False
+
+    threading.Thread(target=run_task).start()
+
+def stop_maintenance_action():
+    global stop_maintenance, maintenance_running
+    stop_maintenance = True
+    maintenance_running = False
+
+def show_advanced_info():
+    top = Toplevel(app)
+    top.title("Advanced Info")
+    top.geometry("500x400")
+    top.configure(bg="#2e2e2e")
+    text = Text(top, bg="#2e2e2e", fg="white", wrap="word", font=("Arial", 12))
+    text.pack(expand=True, fill="both", padx=10, pady=10)
+    Scrollbar(text).pack(side="right", fill="y")
+    text.insert("end", "\n".join([f"{name}: {func()}" for name, (func, _) in checks.items()] + [
+        f"Uptime: {check_uptime()}",
+        f"Disk: {check_disk()}",
+        f"Battery: {check_battery()}",
+        f"RAM: {check_ram()}"
+    ]))
+    text.config(state="disabled")
+
+for idx, (name, (func, open_func)) in enumerate(checks.items()):
+    y = y_start + idx * row_height
+    tk.Label(app, text=name, bg="#1e1e1e", fg="white", font=("Arial", 12), anchor="w").place(x=x_label, y=y)
+    canvas = tk.Canvas(app, width=20, height=20, bg="#1e1e1e", highlightthickness=0)
+    circle = canvas.create_oval(2, 2, 18, 18, fill="grey")
+    canvas.place(x=x_light, y=y+5)
+    status_indicators[name] = (canvas, circle)
+    create_button("Open", open_func, x_buttons, y-5)
+
+# Action Buttons - All aligned
+action_y_start = y_start + row_height * 6 + 10
+create_button("Run System Scan", run_checks, x_buttons, action_y_start)
+create_button("Maintenance", start_maintenance, x_buttons, action_y_start + row_height)
+create_button("Stop", stop_maintenance_action, x_buttons, action_y_start + row_height * 2)
+create_button("Disk Cleanup", open_disk_cleanup, x_buttons, action_y_start + row_height * 3)
+create_button("Advanced Info", show_advanced_info, x_buttons, action_y_start + row_height * 4)
+
+maintenance_status = tk.Label(app, text="", bg="#1e1e1e", fg="white", font=("Arial", 12))
+maintenance_status.place(x=x_buttons, y=action_y_start + row_height * 5 + 10)
+
+app.mainloop()
